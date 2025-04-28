@@ -1,0 +1,3 @@
+﻿  WindowsProject1.cpp
+C:\Users\aleks\Downloads\WindowsProject16-SpriteAnimation\WindowsProject1\WindowsProject1.cpp(750,15): warning C4244: 'argument': conversion from 'time_t' to 'unsigned int', possible loss of data
+  WindowsProject1_SpriteAnimation.vcxproj -> C:\Users\aleks\Downloads\WindowsProject16-SpriteAnimation\x64\Debug\WindowsProject1_SpriteAnimation.exe
