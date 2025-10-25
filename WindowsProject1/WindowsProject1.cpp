@@ -20,6 +20,8 @@
 #include "KSpriteAnimator.h"
 #include "GameObject.h"
 #include <random>
+#include <crtdbg.h>
+#include <memory>
 
 using namespace Gdiplus;
 #pragma comment(lib,"winmm.lib")
@@ -46,11 +48,12 @@ HDC     g_hdc = 0;
 HBITMAP g_hBitmap = 0;
 RECT    g_clientRect;
 KTime   g_time;
-Image* g_image = nullptr;
-Image*  g_bulletImage = nullptr;
-Image*  g_debrisImage = nullptr;
-Image*  g_coinImage = nullptr;
-Image*  g_backImage = nullptr;
+std::shared_ptr<Image> g_image;
+std::shared_ptr<Image> g_bulletImage;
+std::shared_ptr<Image> g_debrisImage;
+std::shared_ptr<Image> g_coinImage;
+//Image*  g_backImage = nullptr;
+HBITMAP g_backImage;
 int		g_mouseLButtonDown = 0;
 KVector2 g_worldPoint = KVector2::zero;
 double g_angle = 0.0;
@@ -91,6 +94,7 @@ void DrawLine(HDC hdc, double x1, double y1, double x2, double y2, COLORREF c = 
 void DrawVector(HDC hdc, KVector2 p1, KVector2 p2, COLORREF c, int penStyle = PS_SOLID, int lineWidth = 1);
 void DrawVector(HDC hdc, KComplex c1, KComplex c2, COLORREF c, int penStyle = PS_SOLID, int lineWidth = 1);
 void DrawImage(HDC hdc, Image* image, KVector2 p);
+void DrawBitmap(HDC hdc, HBITMAP hBitmap, KVector2 p);
 void Initialize();
 void Finalize();
 void OnIdle();
@@ -108,6 +112,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
                      _In_ LPWSTR    lpCmdLine,
                      _In_ int       nCmdShow)
 {
+    _CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
+    _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_DEBUG);
+    //_CrtSetBreakAlloc(266);
+
     UNREFERENCED_PARAMETER(hPrevInstance);
     UNREFERENCED_PARAMETER(lpCmdLine);
 
@@ -160,6 +168,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     Finalize();
     Gdiplus::GdiplusShutdown(gdiplusToken);
+
+    _CrtDumpMemoryLeaks();
 
     return (int) msg.wParam;
 }
@@ -519,7 +529,7 @@ void OnPaint(HDC hdc)
         break;
     }
 
-    DrawImage(hdc, g_image, curline, 0);
+    DrawImage(hdc, g_image.get(), curline, 0);
 
     if (g_score >= 15) InstantDeath(hdc); // makes game harder
 
@@ -527,6 +537,15 @@ void OnPaint(HDC hdc)
     ::TextOutA(hdc, 1, 1, buffer, (int)strlen(buffer));
     sprintf_s(buffer, "Current score: %d", g_score);
     ::TextOutA(hdc, 1, 16, buffer, (int)strlen(buffer));
+
+    // Draw FPS
+    static int prevFps = 0;
+    int fps = (int)(1.0 / g_time.deltaTime);
+    if (std::abs(prevFps - fps) > 10) {
+        prevFps = fps;
+    }
+    sprintf_s(buffer, "FPS: %d", prevFps);
+    ::TextOutA(hdc, g_clientRect.right - 100, 1, buffer, (int)strlen(buffer));
 }
 
 void InstantDeath(HDC hdc)
@@ -542,8 +561,12 @@ void InstantDeath(HDC hdc)
 void DrawBackground(HDC hdc)
 {
     static double imageWidth = 0;
-    if (imageWidth == 0 && g_backImage != nullptr)
-        imageWidth = g_backImage->GetWidth() / g_pixelPerUnit;
+    if (imageWidth == 0 && g_backImage != nullptr) {
+        //imageWidth = g_backImage->GetWidth() / g_pixelPerUnit;
+        BITMAP bm;
+        GetObject(g_backImage, sizeof(BITMAP), &bm);
+        imageWidth = bm.bmWidth / g_pixelPerUnit;
+    }
 
     static KVector2 back1(0, 0);
     static KVector2 back2(imageWidth, 0.0);
@@ -559,8 +582,8 @@ void DrawBackground(HDC hdc)
     if (back2.x <= -imageWidth)
         back2.x = back1.x + imageWidth;
 
-    DrawImage(hdc, g_backImage, back1);
-    DrawImage(hdc, g_backImage, back2);
+    DrawBitmap(hdc, g_backImage, back1);
+    DrawBitmap(hdc, g_backImage, back2);
 }
 
 void DrawObjects(HDC hdc)
@@ -574,7 +597,7 @@ void DrawObjects(HDC hdc)
         {
             obj.pos.x -= objSpeed * g_time.deltaTime; // move objects left
         }
-        DrawImage(hdc, obj.image, obj.pos);
+        DrawImage(hdc, obj.image.get(), obj.pos);
     }
 
     // spawn objects
@@ -714,6 +737,27 @@ void DrawImage(HDC hdc, Image* image, KVector2 p)
     }
 }
 
+void DrawBitmap(HDC hdc, HBITMAP hBitmap, KVector2 p)
+{
+    if (hBitmap != nullptr) {
+        BITMAP bm;
+        GetObject(hBitmap, sizeof(BITMAP), &bm);
+
+        int imageWidth = bm.bmWidth;
+        int imageHeight = bm.bmHeight;
+
+        HDC hdcMem = CreateCompatibleDC(hdc);
+        HBITMAP oldBitmap = (HBITMAP)SelectObject(hdcMem, hBitmap);
+
+        Transform(&p.x, &p.y);
+        BitBlt(hdc, (int)p.x - imageWidth / 2, (int)p.y - imageHeight / 2,
+            imageWidth, imageHeight, hdcMem, 0, 0, SRCCOPY);
+
+        SelectObject(hdcMem, oldBitmap);
+        DeleteDC(hdcMem);
+    }
+}
+
 void OnSize(HWND hwnd)
 {
     Finalize();
@@ -748,20 +792,20 @@ void InverseTransform(double* x, double* y)
 void Initialize()
 {
     srand(time(NULL));
-    if (g_image == nullptr)
-        g_image = new Image(L"spaceship-1.png");
 
-    if (g_bulletImage == nullptr)
-        g_bulletImage = new Image(L"bullet.png");
+    if (!g_image)
+        g_image = std::make_shared<Image>(L"spaceship-1.png");
 
-    if (g_debrisImage == nullptr)
-        g_debrisImage = new Image(L"Asteroid.png");
+    if (!g_bulletImage)
+        g_bulletImage = std::make_shared<Image>(L"bullet.png");
 
-    if (g_coinImage == nullptr)
-        g_coinImage = new Image(L"Sun1.png");
+    if (!g_debrisImage)
+        g_debrisImage = std::make_shared<Image>(L"Asteroid.png");
 
-    if (g_backImage == nullptr)
-        g_backImage = new Image(L"back.png");
+    if (!g_coinImage)
+        g_coinImage = std::make_shared<Image>(L"Sun1.png");
+
+    g_backImage = (HBITMAP)LoadImage(NULL, L"back.bmp", IMAGE_BITMAP, 0, 0, LR_LOADFROMFILE);
 
     if (g_tileManager == nullptr)
         g_tileManager = new KTileManager();
@@ -771,14 +815,11 @@ void Initialize()
     g_animator.SetTilemap(g_tileManager);
 
     std::vector<KVector2> walkRightFrames = {
-        KVector2(0, 0), // col=0, row=0
-        KVector2(1, 0),
-        KVector2(2, 0),
-        KVector2(3, 0)  // repeat middle for loop
+        KVector2(0, 0), KVector2(1, 0), KVector2(2, 0), KVector2(3, 0)
     };
+    g_animator.SetAnimation(0, walkRightFrames, 0.15);
+}
 
-    g_animator.SetAnimation(0, walkRightFrames, 0.15); // 0.15 sec per frame
-}//Initialize()
 
 void Finalize()
 {
@@ -789,20 +830,25 @@ void Finalize()
     if (g_hdc != 0) {
         DeleteDC(g_hdc);
         g_hdc = 0;
-    }//if
+    }
     if (g_hBitmap != 0) {
         DeleteObject(g_hBitmap);
         g_hBitmap = 0;
-    }//if
-    if (g_image != nullptr) {
-        delete g_image;
-        g_image = nullptr;
-    }//if
-    if (g_bulletImage != nullptr) {
-        delete g_bulletImage;
-        g_bulletImage = nullptr;
-    }//if
-}//Finalize()
+    }
+    if (g_backImage != nullptr) {
+        DeleteObject(g_backImage);
+        g_backImage = nullptr;
+    }
+
+    g_animator.ClearAll();
+    g_bullets.clear();
+    g_image.reset();
+    g_bulletImage.reset();
+    g_debrisImage.reset();
+    g_coinImage.reset();
+    g_gameObjects.clear();
+}
+
 
 void OnIdle()
 {
